@@ -7,6 +7,12 @@
 #     https://docs.scrapy.org/en/latest/topics/downloader-middleware.html
 #     https://docs.scrapy.org/en/latest/topics/spider-middleware.html
 
+import os
+
+from dotenv import load_dotenv
+
+load_dotenv()
+
 BOT_NAME = "wrc_scraper"
 
 SPIDER_MODULES = ["wrc_scraper.spiders"]
@@ -22,9 +28,8 @@ ADDONS = {}
 ROBOTSTXT_OBEY = True
 
 # Concurrency and throttling settings
-#CONCURRENT_REQUESTS = 16
-CONCURRENT_REQUESTS_PER_DOMAIN = 1
-DOWNLOAD_DELAY = 1
+CONCURRENT_REQUESTS = int(os.environ.get("CONCURRENT_REQUESTS", 16))
+CONCURRENT_REQUESTS_PER_DOMAIN = int(os.environ.get("CONCURRENT_REQUESTS_PER_DOMAIN", 8))
 
 # Disable cookies (enabled by default)
 #COOKIES_ENABLED = False
@@ -46,9 +51,10 @@ DOWNLOAD_DELAY = 1
 
 # Enable or disable downloader middlewares
 # See https://docs.scrapy.org/en/latest/topics/downloader-middleware.html
-#DOWNLOADER_MIDDLEWARES = {
-#    "wrc_scraper.middlewares.WrcScraperDownloaderMiddleware": 543,
-#}
+DOWNLOADER_MIDDLEWARES = {
+    "scrapy.downloadermiddlewares.useragent.UserAgentMiddleware": None,
+    "wrc_scraper.middlewares.RandomUserAgentMiddleware": 400,
+}
 
 # Enable or disable extensions
 # See https://docs.scrapy.org/en/latest/topics/extensions.html
@@ -64,16 +70,23 @@ DOWNLOAD_DELAY = 1
 
 # Enable and configure the AutoThrottle extension (disabled by default)
 # See https://docs.scrapy.org/en/latest/topics/autothrottle.html
-#AUTOTHROTTLE_ENABLED = True
+AUTOTHROTTLE_ENABLED = True
 # The initial download delay
-#AUTOTHROTTLE_START_DELAY = 5
+AUTOTHROTTLE_START_DELAY = float(os.environ.get("AUTOTHROTTLE_START_DELAY", 1))
 # The maximum download delay to be set in case of high latencies
-#AUTOTHROTTLE_MAX_DELAY = 60
+AUTOTHROTTLE_MAX_DELAY = float(os.environ.get("AUTOTHROTTLE_MAX_DELAY", 30))
 # The average number of requests Scrapy should be sending in parallel to
 # each remote server
-#AUTOTHROTTLE_TARGET_CONCURRENCY = 1.0
+AUTOTHROTTLE_TARGET_CONCURRENCY = float(os.environ.get("AUTOTHROTTLE_TARGET_CONCURRENCY", 4))
 # Enable showing throttling stats for every response received:
 #AUTOTHROTTLE_DEBUG = False
+
+# Retries: 429 = server explicitly asking to slow down, 5xx = usually transient server errors
+RETRY_ENABLED = True
+RETRY_TIMES = int(os.environ.get("RETRY_TIMES", 3))
+RETRY_HTTP_CODES = [429, 500, 502, 503, 504, 522, 524, 408]
+
+DOWNLOAD_TIMEOUT = int(os.environ.get("DOWNLOAD_TIMEOUT", 30))
 
 # Enable and configure HTTP caching (disabled by default)
 # See https://docs.scrapy.org/en/latest/topics/downloader-middleware.html#httpcache-middleware-settings

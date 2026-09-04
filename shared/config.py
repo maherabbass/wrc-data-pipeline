@@ -20,6 +20,8 @@ class Settings(BaseSettings):
 
     partition_size_months: int = 1
 
+    wrc_base_url: str = "https://www.workplacerelations.ie"
+
 
 @lru_cache
 def get_settings() -> Settings:

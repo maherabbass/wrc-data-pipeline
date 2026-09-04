@@ -3,10 +3,14 @@
 # See documentation in:
 # https://docs.scrapy.org/en/latest/topics/spider-middleware.html
 
+import random
+
 from scrapy import signals
 
 # useful for handling different item types with a single interface
 from itemadapter import ItemAdapter
+
+from wrc_scraper.user_agents import USER_AGENTS
 
 
 class WrcScraperSpiderMiddleware:
@@ -51,6 +55,14 @@ class WrcScraperSpiderMiddleware:
 
     def spider_opened(self, spider):
         spider.logger.info("Spider opened: %s" % spider.name)
+
+
+class RandomUserAgentMiddleware:
+    """Picks a random desktop browser User-Agent for every request.
+    """
+
+    def process_request(self, request, spider):
+        request.headers["User-Agent"] = random.choice(USER_AGENTS)
 
 
 class WrcScraperDownloaderMiddleware:
