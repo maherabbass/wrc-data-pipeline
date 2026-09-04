@@ -5,6 +5,7 @@ import scrapy
 
 from shared.config import get_settings
 from shared.hashing import sha256_hex
+from shared.mongo import get_landing_collection
 from shared.partitioning import iter_partitions
 from shared.storage import ensure_bucket, get_s3_client
 from wrc_scraper.items import WrcRecord
@@ -109,6 +110,12 @@ class WrcSpider(scrapy.Spider):
     def parse_document(self, response, identifier, description, published_date, body_name, partition_date, content_type, file_extension):
         file_hash = sha256_hex(response.body)
         settings = get_settings()
+
+        # skip unchanged records
+        existing_record = get_landing_collection().find_one({"body": body_name, "identifier": identifier})
+        if existing_record and existing_record.get("file_hash") == file_hash:
+            self.logger.info(f"Skipped {body_name}/{identifier} -- unchanged")
+            return
 
         # build the storage key
         formatted_identifier = "_".join(identifier.split())
