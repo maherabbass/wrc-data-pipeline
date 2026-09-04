@@ -10,7 +10,7 @@ from scrapy import signals
 # useful for handling different item types with a single interface
 from itemadapter import ItemAdapter
 
-from wrc_scraper.user_agents import USER_AGENTS
+from shared.config import get_settings
 
 
 class WrcScraperSpiderMiddleware:
@@ -62,7 +62,7 @@ class RandomUserAgentMiddleware:
     """
 
     def process_request(self, request, spider):
-        request.headers["User-Agent"] = random.choice(USER_AGENTS)
+        request.headers["User-Agent"] = random.choice(get_settings().wrc_user_agents)
 
 
 class WrcScraperDownloaderMiddleware:
