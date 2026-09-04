@@ -6,6 +6,7 @@ import scrapy
 from shared.config import get_settings
 from shared.hashing import sha256_hex
 from shared.partitioning import iter_partitions
+from shared.storage import ensure_bucket, get_s3_client
 from wrc_scraper.items import WrcRecord
 from wrc_scraper.search_url import build_search_url
 
@@ -107,7 +108,18 @@ class WrcSpider(scrapy.Spider):
 
     def parse_document(self, response, identifier, description, published_date, body_name, partition_date, content_type, file_extension):
         file_hash = sha256_hex(response.body)
+        settings = get_settings()
 
+        # build the storage key
+        formatted_identifier = "_".join(identifier.split())
+        file_path = f"{body_name}/{partition_date.isoformat()}/{formatted_identifier}.{file_extension}"
+
+        # upload the raw document bytes to MinIO at that key
+        s3_client = get_s3_client()
+        ensure_bucket(s3_client, settings.minio_landing_bucket)
+        s3_client.put_object(Bucket=settings.minio_landing_bucket, Key=file_path, Body=response.body)
+
+        # build the metadata record
         record = WrcRecord(
             identifier=identifier,
             description=description,
@@ -118,6 +130,7 @@ class WrcSpider(scrapy.Spider):
             content_type=content_type,
             file_extension=file_extension,
             file_hash=file_hash,
+            file_path=file_path,
         )
         self.logger.info(f"{record.identifier} | {content_type} | hash={file_hash[:12]}...")
         yield record
