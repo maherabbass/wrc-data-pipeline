@@ -1,4 +1,4 @@
-"""Shared JSON log formatting, wired in via WrcSpider.from_crawler"""
+"""Shared JSON log formatting"""
 
 import json
 import logging
