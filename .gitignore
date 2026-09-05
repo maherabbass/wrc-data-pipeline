@@ -30,3 +30,7 @@ tmp/
 # Logs
 *.log
 logs/
+
+# Dagster
+.tmp_dagster_home_*/
+.dagster_home/

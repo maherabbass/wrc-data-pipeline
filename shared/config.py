@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     minio_transformed_bucket: str
 
     partition_size_months: int = 1
+    wrc_partition_start_date: str = "2024-01-01"
 
     wrc_base_url: str = "https://www.workplacerelations.ie"
     wrc_search_path: str = "/en/search/"
