@@ -91,6 +91,7 @@ class WrcSpider(scrapy.Spider):
             href = row.css(settings.wrc_link_selector).get()
 
             if not (identifier and date_text and href):
+                self.crawler.stats.inc_value("wrc/unparseable_rows")
                 events_logger.warning(
                     "unparseable row",
                     extra={"event": "unparseable_row", "body": body_name, "page_number": page_number},
@@ -223,7 +224,8 @@ class WrcSpider(scrapy.Spider):
         saved = stats.get("item_scraped_count", 0)
         skipped = stats.get("wrc/skipped_unchanged", 0)
         failed = stats.get("wrc/failed_downloads", 0)
-        found = saved + skipped + failed
+        unparseable = stats.get("wrc/unparseable_rows", 0)
+        found = saved + skipped + failed + unparseable
 
         events_logger.info(
             "run summary",
@@ -234,5 +236,6 @@ class WrcSpider(scrapy.Spider):
                 "records_saved": saved,
                 "records_skipped": skipped,
                 "records_failed": failed,
+                "records_unparseable": unparseable,
             },
         )
