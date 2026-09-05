@@ -5,6 +5,7 @@ into the transformed zone. Runs on its own, separate from the spider:
 """
 
 import argparse
+import re
 from datetime import date, datetime
 
 from bs4 import BeautifulSoup
@@ -16,6 +17,13 @@ from shared.mongo import get_landing_collection, get_transformed_collection
 from shared.storage import ensure_bucket, get_s3_client, sanitize_identifier
 
 events_logger = get_events_logger()
+
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def normalize_description(text: str) -> str:
+    # source descriptions carry raw \r\n and repeated whitespace from the site's markup
+    return _WHITESPACE_RE.sub(" ", text).strip()
 
 
 def parse_args() -> argparse.Namespace:
@@ -51,42 +59,57 @@ def main() -> None:
 
     saved = 0
     skipped = 0
+    failed = 0
     for record in records:
-        raw_bytes = s3_client.get_object(
-            Bucket=settings.minio_landing_bucket, Key=record["file_path"]
-        )["Body"].read()
+        try:
+            raw_bytes = s3_client.get_object(
+                Bucket=settings.minio_landing_bucket, Key=record["file_path"]
+            )["Body"].read()
 
-        # pdf/doc are left untouched; html is cleaned down to just the case content
-        if record["content_type"] == "html":
-            content = clean_html(raw_bytes, settings.wrc_content_selector)
-        else:
-            content = raw_bytes
+            # pdf/doc are left untouched; html is cleaned down to just the case content
+            if record["content_type"] == "html":
+                content = clean_html(raw_bytes, settings.wrc_content_selector)
+            else:
+                content = raw_bytes
 
-        content_hash = sha256_hex(content)
+            content_hash = sha256_hex(content)
 
-        # skip if this exact content was already transformed
-        existing_record = transformed_collection.find_one({"body": record["body"], "identifier": record["identifier"]})
-        if existing_record and existing_record.get("file_hash") == content_hash:
-            skipped += 1
-            events_logger.info(
-                "skipped -- unchanged",
-                extra={"event": "skipped_unchanged", "body": record["body"], "identifier": record["identifier"]},
+            # skip if this exact content was already transformed
+            existing_record = transformed_collection.find_one({"body": record["body"], "identifier": record["identifier"]})
+            if existing_record and existing_record.get("file_hash") == content_hash:
+                skipped += 1
+                events_logger.info(
+                    "skipped -- unchanged",
+                    extra={"event": "skipped_unchanged", "body": record["body"], "identifier": record["identifier"]},
+                )
+                continue
+
+            # flat filename, no folders
+            file_path = f"{sanitize_identifier(record['identifier'])}.{record['file_extension']}"
+            s3_client.put_object(Bucket=settings.minio_transformed_bucket, Key=file_path, Body=content)
+
+            doc = dict(record)
+            doc.pop("_id", None)
+            doc["file_path"] = file_path
+            doc["file_hash"] = content_hash
+            doc["description"] = normalize_description(doc["description"])
+            transformed_collection.update_one(
+                {"body": record["body"], "identifier": record["identifier"]},
+                {"$set": doc},
+                upsert=True,
+            )
+        except Exception as exc:
+            failed += 1
+            events_logger.error(
+                "save failed",
+                extra={
+                    "event": "save_failed",
+                    "body": record.get("body"),
+                    "identifier": record.get("identifier"),
+                    "error": str(exc),
+                },
             )
             continue
-
-        # flat filename, no folders
-        file_path = f"{sanitize_identifier(record['identifier'])}.{record['file_extension']}"
-        s3_client.put_object(Bucket=settings.minio_transformed_bucket, Key=file_path, Body=content)
-
-        doc = dict(record)
-        doc.pop("_id", None)
-        doc["file_path"] = file_path
-        doc["file_hash"] = content_hash
-        transformed_collection.update_one(
-            {"body": record["body"], "identifier": record["identifier"]},
-            {"$set": doc},
-            upsert=True,
-        )
 
         saved += 1
         events_logger.info(
@@ -101,7 +124,13 @@ def main() -> None:
 
     events_logger.info(
         "run summary",
-        extra={"event": "run_summary", "records_saved": saved, "records_skipped": skipped},
+        extra={
+            "event": "run_summary",
+            "records_found": saved + skipped + failed,
+            "records_saved": saved,
+            "records_skipped": skipped,
+            "records_failed": failed,
+        },
     )
 
 

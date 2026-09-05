@@ -5,6 +5,10 @@
 
 from datetime import datetime
 
+from scrapy.exceptions import DropItem
+from scrapy.utils.defer import deferred_to_future
+from twisted.internet.threads import deferToThread
+
 from shared.logging_config import get_events_logger
 from shared.mongo import get_landing_collection
 from wrc_scraper.items import WrcRecord
@@ -13,19 +17,43 @@ events_logger = get_events_logger()
 
 
 class WrcScraperPipeline:
-    def process_item(self, item: WrcRecord, spider):
+    def __init__(self, stats):
+        self.stats = stats
+
+    @classmethod
+    def from_crawler(cls, crawler):
+        return cls(crawler.stats)
+
+    async def process_item(self, item: WrcRecord, spider):
         # convert dates into a Mongo-friendly datetime
         doc = item.model_dump()
         doc["published_date"] = datetime.combine(item.published_date, datetime.min.time())
         doc["partition_date"] = datetime.combine(item.partition_date, datetime.min.time())
 
-        # upsert into Mongo
-        collection = get_landing_collection()
-        collection.update_one(
-            {"body": item.body, "identifier": item.identifier},
-            {"$set": doc},
-            upsert=True,
-        )
+        try:
+            # upsert into Mongo
+            collection = get_landing_collection()
+            await deferred_to_future(
+                deferToThread(
+                    collection.update_one,
+                    {"body": item.body, "identifier": item.identifier},
+                    {"$set": doc},
+                    upsert=True,
+                )
+            )
+        except Exception as exc:
+            self.stats.inc_value("wrc/save_failed")
+            events_logger.error(
+                "save failed",
+                extra={
+                    "event": "save_failed",
+                    "stage": "mongo_upsert",
+                    "body": item.body,
+                    "identifier": item.identifier,
+                    "error": str(exc),
+                },
+            )
+            raise DropItem(f"Failed to save {item.body}/{item.identifier} to Mongo") from exc
 
         events_logger.info(
             "saved",

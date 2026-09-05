@@ -4,6 +4,8 @@ from pathlib import PurePosixPath
 import scrapy
 from scrapy import signals
 from scrapy.spidermiddlewares.httperror import HttpError
+from scrapy.utils.defer import deferred_to_future
+from twisted.internet.threads import deferToThread
 
 from shared.config import get_settings
 from shared.hashing import sha256_hex, normalize_for_hash
@@ -177,41 +179,62 @@ class WrcSpider(scrapy.Spider):
             },
         )
 
-    def parse_document(self, response, identifier, description, published_date, body_name, partition_date, content_type, file_extension):
+    async def parse_document(self, response, identifier, description, published_date, body_name, partition_date, content_type, file_extension):
         file_hash = sha256_hex(normalize_for_hash(response.body, content_type))
         settings = get_settings()
-
-        # skip unchanged records
-        existing_record = get_landing_collection().find_one({"body": body_name, "identifier": identifier})
-        if existing_record and existing_record.get("file_hash") == file_hash:
-            self.crawler.stats.inc_value("wrc/skipped_unchanged")
-            events_logger.info(
-                "skipped -- unchanged",
-                extra={"event": "skipped_unchanged", "body": body_name, "identifier": identifier},
-            )
-            return
 
         # build the storage key
         file_path = f"{body_name}/{partition_date.isoformat()}/{sanitize_identifier(identifier)}.{file_extension}"
 
-        # upload the raw document bytes to MinIO at that key
-        s3_client = get_s3_client()
-        ensure_bucket(s3_client, settings.minio_landing_bucket)
-        s3_client.put_object(Bucket=settings.minio_landing_bucket, Key=file_path, Body=response.body)
+        try:
+            # skip unchanged records
+            existing_record = await deferred_to_future(
+                deferToThread(get_landing_collection().find_one, {"body": body_name, "identifier": identifier})
+            )
+            if existing_record and existing_record.get("file_hash") == file_hash:
+                self.crawler.stats.inc_value("wrc/skipped_unchanged")
+                events_logger.info(
+                    "skipped -- unchanged",
+                    extra={"event": "skipped_unchanged", "body": body_name, "identifier": identifier},
+                )
+                return
 
-        # build the metadata record
-        record = WrcRecord(
-            identifier=identifier,
-            description=description,
-            published_date=published_date,
-            link=response.url,
-            body=body_name,
-            partition_date=partition_date,
-            content_type=content_type,
-            file_extension=file_extension,
-            file_hash=file_hash,
-            file_path=file_path,
-        )
+            # upload the raw document bytes to MinIO at that key
+            s3_client = get_s3_client()
+            await deferred_to_future(deferToThread(ensure_bucket, s3_client, settings.minio_landing_bucket))
+            await deferred_to_future(
+                deferToThread(
+                    s3_client.put_object, Bucket=settings.minio_landing_bucket, Key=file_path, Body=response.body
+                )
+            )
+
+            # build the metadata record
+            record = WrcRecord(
+                identifier=identifier,
+                description=description,
+                published_date=published_date,
+                link=response.url,
+                body=body_name,
+                partition_date=partition_date,
+                content_type=content_type,
+                file_extension=file_extension,
+                file_hash=file_hash,
+                file_path=file_path,
+            )
+        except Exception as exc:
+            self.crawler.stats.inc_value("wrc/save_failed")
+            events_logger.error(
+                "save failed",
+                extra={
+                    "event": "save_failed",
+                    "stage": "landing_upload",
+                    "body": body_name,
+                    "identifier": identifier,
+                    "error": str(exc),
+                },
+            )
+            return
+
         events_logger.info(
             "fetched",
             extra={
@@ -230,7 +253,8 @@ class WrcSpider(scrapy.Spider):
         skipped = stats.get("wrc/skipped_unchanged", 0)
         failed = stats.get("wrc/failed_downloads", 0)
         unparseable = stats.get("wrc/unparseable_rows", 0)
-        found = saved + skipped + failed + unparseable
+        save_failed = stats.get("wrc/save_failed", 0)
+        found = saved + skipped + failed + unparseable + save_failed
 
         events_logger.info(
             "run summary",
@@ -242,5 +266,6 @@ class WrcSpider(scrapy.Spider):
                 "records_skipped": skipped,
                 "records_failed": failed,
                 "records_unparseable": unparseable,
+                "records_save_failed": save_failed,
             },
         )
