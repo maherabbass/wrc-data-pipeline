@@ -14,3 +14,8 @@ def get_mongo_client() -> MongoClient:
 def get_landing_collection() -> Collection:
     settings = get_settings()
     return get_mongo_client()[settings.mongo_db_name][settings.mongo_landing_collection]
+
+
+def get_transformed_collection() -> Collection:
+    settings = get_settings()
+    return get_mongo_client()[settings.mongo_db_name][settings.mongo_transformed_collection]

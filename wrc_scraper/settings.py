@@ -27,6 +27,9 @@ ADDONS = {}
 # Obey robots.txt rules
 ROBOTSTXT_OBEY = True
 
+# Scrapy's own default is DEBUG which is noisy
+LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
+
 # Concurrency and throttling settings
 CONCURRENT_REQUESTS = int(os.environ.get("CONCURRENT_REQUESTS", 16))
 CONCURRENT_REQUESTS_PER_DOMAIN = int(os.environ.get("CONCURRENT_REQUESTS_PER_DOMAIN", 8))

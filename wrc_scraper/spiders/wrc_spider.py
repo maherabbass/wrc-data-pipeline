@@ -2,14 +2,15 @@ from datetime import date, datetime
 from pathlib import PurePosixPath
 
 import scrapy
+from scrapy import signals
 from scrapy.spidermiddlewares.httperror import HttpError
 
 from shared.config import get_settings
-from shared.hashing import sha256_hex
+from shared.hashing import sha256_hex, normalize_for_hash
 from shared.logging_config import configure_json_logging, get_events_logger
 from shared.mongo import get_landing_collection
 from shared.partitioning import iter_partitions
-from shared.storage import ensure_bucket, get_s3_client
+from shared.storage import ensure_bucket, get_s3_client, sanitize_identifier
 from wrc_scraper.items import WrcRecord
 from wrc_scraper.search_url import build_search_url
 
@@ -22,9 +23,13 @@ class WrcSpider(scrapy.Spider):
     @classmethod
     def from_crawler(cls, crawler, *args, **kwargs):
         spider = super().from_crawler(crawler, *args, **kwargs)
-        # Runs after Scrapy configures logging, so our JSON logging configuration replaces it.
-        configure_json_logging(crawler.settings.get("LOG_LEVEL", "INFO"))
+        # Scrapy re-installs its own logging handler right after this returns, so JSON
+        # logging is configured on spider_opened instead, which fires after that happens.
+        crawler.signals.connect(spider.setup_logging, signal=signals.spider_opened)
         return spider
+
+    def setup_logging(self, spider):
+        configure_json_logging(self.settings.get("LOG_LEVEL", "INFO"))
 
     def __init__(self, *args, **kwargs):
         self.start_date = date.fromisoformat(kwargs.pop("start_date"))
@@ -91,6 +96,7 @@ class WrcSpider(scrapy.Spider):
             href = row.css(settings.wrc_link_selector).get()
 
             if not (identifier and date_text and href):
+                self.crawler.stats.inc_value("wrc/unparseable_rows")
                 events_logger.warning(
                     "unparseable row",
                     extra={"event": "unparseable_row", "body": body_name, "page_number": page_number},
@@ -172,7 +178,7 @@ class WrcSpider(scrapy.Spider):
         )
 
     def parse_document(self, response, identifier, description, published_date, body_name, partition_date, content_type, file_extension):
-        file_hash = sha256_hex(response.body)
+        file_hash = sha256_hex(normalize_for_hash(response.body, content_type))
         settings = get_settings()
 
         # skip unchanged records
@@ -186,8 +192,7 @@ class WrcSpider(scrapy.Spider):
             return
 
         # build the storage key
-        formatted_identifier = "_".join(identifier.split())
-        file_path = f"{body_name}/{partition_date.isoformat()}/{formatted_identifier}.{file_extension}"
+        file_path = f"{body_name}/{partition_date.isoformat()}/{sanitize_identifier(identifier)}.{file_extension}"
 
         # upload the raw document bytes to MinIO at that key
         s3_client = get_s3_client()
@@ -224,7 +229,8 @@ class WrcSpider(scrapy.Spider):
         saved = stats.get("item_scraped_count", 0)
         skipped = stats.get("wrc/skipped_unchanged", 0)
         failed = stats.get("wrc/failed_downloads", 0)
-        found = saved + skipped + failed
+        unparseable = stats.get("wrc/unparseable_rows", 0)
+        found = saved + skipped + failed + unparseable
 
         events_logger.info(
             "run summary",
@@ -235,5 +241,6 @@ class WrcSpider(scrapy.Spider):
                 "records_saved": saved,
                 "records_skipped": skipped,
                 "records_failed": failed,
+                "records_unparseable": unparseable,
             },
         )

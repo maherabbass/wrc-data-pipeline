@@ -26,3 +26,9 @@ def ensure_bucket(client, bucket: str) -> None:
         if code not in ("404", "NoSuchBucket"):
             raise
         client.create_bucket(Bucket=bucket)
+
+
+def sanitize_identifier(identifier: str) -> str:
+    # identifiers are inconsistently formatted on-site (stray spaces, mixed separators);
+    # collapse whitespace so the result is a safe, consistent storage key/filename
+    return "_".join(identifier.split())
