@@ -2,10 +2,11 @@ from datetime import date, datetime
 from pathlib import PurePosixPath
 
 import scrapy
+from scrapy import signals
 from scrapy.spidermiddlewares.httperror import HttpError
 
 from shared.config import get_settings
-from shared.hashing import sha256_hex
+from shared.hashing import sha256_hex, normalize_for_hash
 from shared.logging_config import configure_json_logging, get_events_logger
 from shared.mongo import get_landing_collection
 from shared.partitioning import iter_partitions
@@ -22,9 +23,13 @@ class WrcSpider(scrapy.Spider):
     @classmethod
     def from_crawler(cls, crawler, *args, **kwargs):
         spider = super().from_crawler(crawler, *args, **kwargs)
-        # Runs after Scrapy configures logging, so our JSON logging configuration replaces it.
-        configure_json_logging(crawler.settings.get("LOG_LEVEL", "INFO"))
+        # Scrapy re-installs its own logging handler right after this returns, so JSON
+        # logging is configured on spider_opened instead, which fires after that happens.
+        crawler.signals.connect(spider.setup_logging, signal=signals.spider_opened)
         return spider
+
+    def setup_logging(self, spider):
+        configure_json_logging(self.settings.get("LOG_LEVEL", "INFO"))
 
     def __init__(self, *args, **kwargs):
         self.start_date = date.fromisoformat(kwargs.pop("start_date"))
@@ -173,7 +178,7 @@ class WrcSpider(scrapy.Spider):
         )
 
     def parse_document(self, response, identifier, description, published_date, body_name, partition_date, content_type, file_extension):
-        file_hash = sha256_hex(response.body)
+        file_hash = sha256_hex(normalize_for_hash(response.body, content_type))
         settings = get_settings()
 
         # skip unchanged records

@@ -32,6 +32,7 @@ def configure_json_logging(level: str = "INFO") -> None:
     """Point the root logger at a single JSON-formatted handler."""
     handler = logging.StreamHandler()
     handler.setFormatter(JsonFormatter())
+    handler.setLevel(level)  # since Scrapy hardcodes its own loggers to DEBUG
     logging.basicConfig(level=level, handlers=[handler], force=True)
 
 
