@@ -5,8 +5,11 @@
 
 from datetime import datetime
 
+from shared.logging_config import get_events_logger
 from shared.mongo import get_landing_collection
 from wrc_scraper.items import WrcRecord
+
+events_logger = get_events_logger()
 
 
 class WrcScraperPipeline:
@@ -24,5 +27,13 @@ class WrcScraperPipeline:
             upsert=True,
         )
 
-        spider.logger.info(f"Saved {item.body}/{item.identifier} -> {item.file_path}")
+        events_logger.info(
+            "saved",
+            extra={
+                "event": "saved_to_mongo",
+                "body": item.body,
+                "identifier": item.identifier,
+                "file_path": item.file_path,
+            },
+        )
         return item

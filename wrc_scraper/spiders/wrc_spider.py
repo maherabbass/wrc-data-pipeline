@@ -2,18 +2,29 @@ from datetime import date, datetime
 from pathlib import PurePosixPath
 
 import scrapy
+from scrapy.spidermiddlewares.httperror import HttpError
 
 from shared.config import get_settings
 from shared.hashing import sha256_hex
+from shared.logging_config import configure_json_logging, get_events_logger
 from shared.mongo import get_landing_collection
 from shared.partitioning import iter_partitions
 from shared.storage import ensure_bucket, get_s3_client
 from wrc_scraper.items import WrcRecord
 from wrc_scraper.search_url import build_search_url
 
+events_logger = get_events_logger()
+
 
 class WrcSpider(scrapy.Spider):
     name = "wrc"
+
+    @classmethod
+    def from_crawler(cls, crawler, *args, **kwargs):
+        spider = super().from_crawler(crawler, *args, **kwargs)
+        # Runs after Scrapy configures logging, so our JSON logging configuration replaces it.
+        configure_json_logging(crawler.settings.get("LOG_LEVEL", "INFO"))
+        return spider
 
     def __init__(self, *args, **kwargs):
         self.start_date = date.fromisoformat(kwargs.pop("start_date"))
@@ -29,12 +40,22 @@ class WrcSpider(scrapy.Spider):
             for partition_start, partition_end, partition_date in iter_partitions(
                 self.start_date, self.end_date, size_months
             ):
+                events_logger.info(
+                    "partition started",
+                    extra={
+                        "event": "crawl_partition_started",
+                        "body": body_name,
+                        "partition_start": partition_start.isoformat(),
+                        "partition_end": partition_end.isoformat(),
+                    },
+                )
                 url = build_search_url(
                     base_url, settings.wrc_search_path, body_id, partition_start, partition_end, page_number=1
                 )
                 yield scrapy.Request(
                     url,
                     callback=self.parse_search_results,
+                    errback=self.handle_error,
                     cb_kwargs={
                         "base_url": base_url,
                         "body_id": body_id,
@@ -50,9 +71,19 @@ class WrcSpider(scrapy.Spider):
         settings = get_settings()
         rows = response.css(settings.wrc_result_row_selector)
         if not rows:
-            self.logger.info(f"{body_name}: no more results after page {page_number - 1}")
+            events_logger.info(
+                "no more results",
+                extra={
+                    "event": "search_page_empty",
+                    "body": body_name,
+                    "partition_start": partition_start.isoformat(),
+                    "partition_end": partition_end.isoformat(),
+                    "page_number": page_number,
+                },
+            )
             return
 
+        records_valid = 0
         for row in rows:
             identifier = row.css(settings.wrc_identifier_selector).get(default="").strip()
             description = row.css(settings.wrc_description_selector).get(default="").strip()
@@ -60,9 +91,13 @@ class WrcSpider(scrapy.Spider):
             href = row.css(settings.wrc_link_selector).get()
 
             if not (identifier and date_text and href):
-                self.logger.warning(f"Skipping unparseable row for {body_name}")
+                events_logger.warning(
+                    "unparseable row",
+                    extra={"event": "unparseable_row", "body": body_name, "page_number": page_number},
+                )
                 continue
 
+            records_valid += 1
             published_date = datetime.strptime(date_text, settings.wrc_date_format).date()
             link = response.urljoin(href)
             content_type, file_extension = self.infer_content_type(link)
@@ -70,6 +105,7 @@ class WrcSpider(scrapy.Spider):
             yield scrapy.Request(
                 link,
                 callback=self.parse_document,
+                errback=self.handle_error,
                 cb_kwargs={
                     "identifier": identifier,
                     "description": description,
@@ -81,12 +117,26 @@ class WrcSpider(scrapy.Spider):
                 },
             )
 
+        events_logger.info(
+            "search page processed",
+            extra={
+                "event": "search_page_scraped",
+                "body": body_name,
+                "partition_start": partition_start.isoformat(),
+                "partition_end": partition_end.isoformat(),
+                "page_number": page_number,
+                "records_found": len(rows),
+                "records_valid": records_valid,
+            },
+        )
+
         next_url = build_search_url(
             base_url, settings.wrc_search_path, body_id, partition_start, partition_end, page_number=page_number + 1
         )
         yield scrapy.Request(
             next_url,
             callback=self.parse_search_results,
+            errback=self.handle_error,
             cb_kwargs={
                 "base_url": base_url,
                 "body_id": body_id,
@@ -107,6 +157,20 @@ class WrcSpider(scrapy.Spider):
             return "doc", suffix
         return "html", "html"
 
+    def handle_error(self, failure):
+        request = failure.request
+        status = failure.value.response.status if failure.check(HttpError) else None
+        self.crawler.stats.inc_value("wrc/failed_downloads")
+        events_logger.error(
+            "download failed",
+            extra={
+                "event": "download_failed",
+                "url": request.url,
+                "status": status,
+                "error": failure.getErrorMessage().strip(),
+            },
+        )
+
     def parse_document(self, response, identifier, description, published_date, body_name, partition_date, content_type, file_extension):
         file_hash = sha256_hex(response.body)
         settings = get_settings()
@@ -114,7 +178,11 @@ class WrcSpider(scrapy.Spider):
         # skip unchanged records
         existing_record = get_landing_collection().find_one({"body": body_name, "identifier": identifier})
         if existing_record and existing_record.get("file_hash") == file_hash:
-            self.logger.info(f"Skipped {body_name}/{identifier} -- unchanged")
+            self.crawler.stats.inc_value("wrc/skipped_unchanged")
+            events_logger.info(
+                "skipped -- unchanged",
+                extra={"event": "skipped_unchanged", "body": body_name, "identifier": identifier},
+            )
             return
 
         # build the storage key
@@ -139,5 +207,33 @@ class WrcSpider(scrapy.Spider):
             file_hash=file_hash,
             file_path=file_path,
         )
-        self.logger.info(f"{record.identifier} | {content_type} | hash={file_hash[:12]}...")
+        events_logger.info(
+            "fetched",
+            extra={
+                "event": "document_uploaded",
+                "body": body_name,
+                "identifier": record.identifier,
+                "content_type": content_type,
+                "file_hash": file_hash,
+            },
+        )
         yield record
+
+    def closed(self, reason):
+        stats = self.crawler.stats.get_stats()
+        saved = stats.get("item_scraped_count", 0)
+        skipped = stats.get("wrc/skipped_unchanged", 0)
+        failed = stats.get("wrc/failed_downloads", 0)
+        found = saved + skipped + failed
+
+        events_logger.info(
+            "run summary",
+            extra={
+                "event": "run_summary",
+                "reason": reason,
+                "records_found": found,
+                "records_saved": saved,
+                "records_skipped": skipped,
+                "records_failed": failed,
+            },
+        )
