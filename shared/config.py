@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     wrc_link_selector: str = "div.link a::attr(href)"
     wrc_date_format: str = "%d/%m/%Y"
 
+    # CSS selector isolating a case page's actual content
+    wrc_content_selector: str = "div.content"
+
     # Pool of desktop browser user agents RandomUserAgentMiddleware picks from per request.
     wrc_user_agents: list[str] = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "

@@ -9,7 +9,7 @@ from shared.hashing import sha256_hex
 from shared.logging_config import configure_json_logging, get_events_logger
 from shared.mongo import get_landing_collection
 from shared.partitioning import iter_partitions
-from shared.storage import ensure_bucket, get_s3_client
+from shared.storage import ensure_bucket, get_s3_client, sanitize_identifier
 from wrc_scraper.items import WrcRecord
 from wrc_scraper.search_url import build_search_url
 
@@ -186,8 +186,7 @@ class WrcSpider(scrapy.Spider):
             return
 
         # build the storage key
-        formatted_identifier = "_".join(identifier.split())
-        file_path = f"{body_name}/{partition_date.isoformat()}/{formatted_identifier}.{file_extension}"
+        file_path = f"{body_name}/{partition_date.isoformat()}/{sanitize_identifier(identifier)}.{file_extension}"
 
         # upload the raw document bytes to MinIO at that key
         s3_client = get_s3_client()
