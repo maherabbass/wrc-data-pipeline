@@ -46,8 +46,11 @@ Reads matching records from the landing collection for that date range, leaves P
 The scraper and transform step can also be run as a pair of dependent, orchestrated assets instead of two manual commands:
 
 ```
-dagster dev
+.\run_dagster.ps1     # Windows
+./run_dagster.sh      # macOS/Linux
 ```
+
+Both scripts set `DAGSTER_HOME` to an absolute path computed from the project's own location — Dagster requires it to be absolute, so it can't be portably hardcoded in a shared `.env.example`. Without it, Dagster falls back to a fresh temporary instance on every run (losing history between runs). The Windows script additionally sets `PYTHONLEGACYWINDOWSSTDIO`, which has to be set before Python starts and so can't be loaded from `.env` at all — without it, Dagster's run logs aren't captured for the UI to display (a Windows-only console I/O limitation; macOS/Linux don't need this).
 
 Open `http://localhost:3000`. You'll see two assets, `landing_zone` and `transformed_zone` (the latter depends on the former), partitioned by month. Pick a month and materialize `landing_zone`; once it succeeds, `transformed_zone` becomes materializable for that same month. Selecting both together and materializing runs them in the correct order automatically.
 
