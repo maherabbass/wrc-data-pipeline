@@ -8,3 +8,4 @@ Scrapy==2.18.0
 beautifulsoup4==4.12.3
 dagster==1.13.21
 dagster-webserver==1.13.21
+pytest==8.3.5

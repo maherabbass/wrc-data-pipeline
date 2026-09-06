@@ -54,6 +54,14 @@ Both scripts set `DAGSTER_HOME` to an absolute path computed from the project's 
 
 Open `http://localhost:3000`. You'll see two assets, `landing_zone` and `transformed_zone` (the latter depends on the former), partitioned by month. Pick a month and materialize `landing_zone`; once it succeeds, `transformed_zone` becomes materializable for that same month. Selecting both together and materializing runs them in the correct order automatically.
 
+## Running tests
+
+```
+pytest
+```
+
+Covers the pure logic that's cheapest and most valuable to pin down: date partitioning, the hash-normalization fix, identifier sanitization, and search URL building. Doesn't cover the Scrapy/Dagster pipeline itself, which was instead verified through live crawls against real Mongo/MinIO — these are unit tests for the standalone helper functions, not integration tests.
+
 ## Where things are configured
 
 Every connection string, bucket/collection name, partition size, and scraping parameter (selectors, retry/throttle settings, user agents, etc.) lives in `.env` — see `.env.example` for the full list with comments. Nothing is hardcoded in the source.
@@ -65,6 +73,7 @@ shared/           config, Mongo/S3 clients, hashing, logging -- used by both the
 wrc_scraper/      the Scrapy project (spider, item model, pipeline, settings)
 transform/        the standalone transform script
 orchestration/    Dagster assets wiring the scraper and transform step together
+tests/            unit tests for the standalone helper functions in shared/ and wrc_scraper/search_url.py
 ```
 
 See `ARCHITECTURE.md` for the higher-level design decisions.
