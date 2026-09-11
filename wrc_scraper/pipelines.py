@@ -6,11 +6,9 @@
 from datetime import datetime
 
 from scrapy.exceptions import DropItem
-from scrapy.utils.defer import deferred_to_future
-from twisted.internet.threads import deferToThread
 
 from shared.logging_config import get_events_logger
-from shared.mongo import get_landing_collection
+from shared.mongo import get_async_landing_collection
 from wrc_scraper.items import WrcRecord
 
 events_logger = get_events_logger()
@@ -32,14 +30,11 @@ class WrcScraperPipeline:
 
         try:
             # upsert into Mongo
-            collection = get_landing_collection()
-            await deferred_to_future(
-                deferToThread(
-                    collection.update_one,
-                    {"body": item.body, "identifier": item.identifier},
-                    {"$set": doc},
-                    upsert=True,
-                )
+            collection = get_async_landing_collection()
+            await collection.update_one(
+                {"body": item.body, "identifier": item.identifier},
+                {"$set": doc},
+                upsert=True,
             )
         except Exception as exc:
             self.stats.inc_value("wrc/save_failed")
