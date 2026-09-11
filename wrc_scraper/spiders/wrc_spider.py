@@ -1,18 +1,18 @@
+import aioboto3
+from contextlib import AsyncExitStack
 from datetime import date, datetime
 from pathlib import PurePosixPath
 
 import scrapy
 from scrapy import signals
 from scrapy.spidermiddlewares.httperror import HttpError
-from scrapy.utils.defer import deferred_to_future
-from twisted.internet.threads import deferToThread
 
 from shared.config import get_settings
 from shared.hashing import sha256_hex, normalize_for_hash
 from shared.logging_config import configure_json_logging, get_events_logger
-from shared.mongo import get_landing_collection
+from shared.mongo import get_async_landing_collection
 from shared.partitioning import iter_partitions
-from shared.storage import ensure_bucket, get_s3_client, sanitize_identifier
+from shared.storage import async_s3_client, ensure_bucket_async, sanitize_identifier
 from wrc_scraper.items import WrcRecord
 from wrc_scraper.search_url import build_search_url
 
@@ -28,10 +28,24 @@ class WrcSpider(scrapy.Spider):
         # Scrapy re-installs its own logging handler right after this returns, so JSON
         # logging is configured on spider_opened instead, which fires after that happens.
         crawler.signals.connect(spider.setup_logging, signal=signals.spider_opened)
+        crawler.signals.connect(spider.open_clients, signal=signals.spider_opened)
+        crawler.signals.connect(spider.close_clients, signal=signals.spider_closed)
         return spider
 
     def setup_logging(self, spider):
         configure_json_logging(self.settings.get("LOG_LEVEL", "INFO"))
+
+    async def open_clients(self, spider):
+        # One Mongo/S3 client for the whole crawl, opened once instead of per-request.
+        settings = get_settings()
+        self.landing_collection = get_async_landing_collection()
+        self._s3_exit_stack = AsyncExitStack()
+        session = aioboto3.Session()
+        self.s3_client = await self._s3_exit_stack.enter_async_context(async_s3_client(session))
+        await ensure_bucket_async(self.s3_client, settings.minio_landing_bucket)
+
+    async def close_clients(self, spider, reason):
+        await self._s3_exit_stack.aclose()
 
     def __init__(self, *args, **kwargs):
         self.start_date = date.fromisoformat(kwargs.pop("start_date"))
@@ -188,9 +202,7 @@ class WrcSpider(scrapy.Spider):
 
         try:
             # skip unchanged records
-            existing_record = await deferred_to_future(
-                deferToThread(get_landing_collection().find_one, {"body": body_name, "identifier": identifier})
-            )
+            existing_record = await self.landing_collection.find_one({"body": body_name, "identifier": identifier})
             if existing_record and existing_record.get("file_hash") == file_hash:
                 self.crawler.stats.inc_value("wrc/skipped_unchanged")
                 events_logger.info(
@@ -200,13 +212,7 @@ class WrcSpider(scrapy.Spider):
                 return
 
             # upload the raw document bytes to MinIO at that key
-            s3_client = get_s3_client()
-            await deferred_to_future(deferToThread(ensure_bucket, s3_client, settings.minio_landing_bucket))
-            await deferred_to_future(
-                deferToThread(
-                    s3_client.put_object, Bucket=settings.minio_landing_bucket, Key=file_path, Body=response.body
-                )
-            )
+            await self.s3_client.put_object(Bucket=settings.minio_landing_bucket, Key=file_path, Body=response.body)
 
             # build the metadata record
             record = WrcRecord(
